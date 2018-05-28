@@ -24,3 +24,17 @@ uncurryN n = do
         vars = map VarE xs
            -- note the use of foldl to build currified application
     pure $ LamE args (foldl AppE (VarE f) vars)
+
+genCurries :: Int -> Q [Dec]
+genCurries n = forM [1..n] mkCurryDec
+  where mkCurryDec ith = do
+            curry <- curryN ith
+            let name = mkName $ "curry" ++ show ith
+            pure $ FunD name [Clause [] (NormalB curry) []]
+
+genUncurries :: Int -> Q [Dec]
+genUncurries n = forM [1..n] mkUncurryDec
+  where mkUncurryDec ith = do
+            uncurry <- uncurryN ith
+            let name = mkName $ "uncurry" ++ show ith
+            pure $ FunD name [Clause [] (NormalB uncurry) []]
