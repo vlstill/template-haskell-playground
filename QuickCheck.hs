@@ -7,14 +7,22 @@ import Test.QuickCheck.Function ( Fun ( Fun ) )
 import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
+import Language.Haskell.TH.ExpandSyns
 import Curry
+
+sprop :: String -> String -> Q Exp
+sprop teacher student = (,) <$> lookupValueName teacher <*> lookupValueName student >>= \case
+    (Just tname, Just sname) -> prop tname sname
+    (Nothing, Nothing) -> fail $ "sprop: Could not find " ++ teacher ++ " and " ++ student
+    (Nothing, _)       -> fail $ "sprop: Could not find " ++ teacher
+    (_, Nothing)       -> fail $ "sprop: Could not find " ++ student
 
 -- | $(prop 'a 'b) :: Property
 -- >>> quickCheck $(prop 'drop 'drop)
 -- +++ OK, passed 100 tests.
 --
 -- >>> quickCheck $(prop 'drop 'take)
--- *** Failed! Falsifiable (after 3 tests):                  
+-- *** Failed! Falsifiable (after 3 tests):
 -- 0
 -- [()]
 -- [()] /= []
@@ -35,24 +43,54 @@ testFun' tname ttype sname stype = do
     let ar = length targs
     xs <- replicateM ar (newName "x")
 
-    let pats = zipWith mkpat targs xs
-        args = zipWith mkvar targs xs
+    pats <- zipWithM mkpat targs xs
+    args <- zipWithM mkvar targs xs
     pure $ LamE pats (VarE '(===) `AppE` (apply tname args) `AppE` (apply sname args))
 
   where
-    mkpat :: Type -> Name -> Pat
-    mkpat ft@(AppT (AppT ArrowT _) _) x = ConP 'Fun [WildP, VarP x]
-    mkpat _ x = VarP x
-
-    mkvar :: Type -> Name -> Exp
-    mkvar ft@(AppT (AppT ArrowT _) _) x = VarE uc `AppE` VarE x
+    -- | construct a pattern from its type and variable name (@x@)
+    -- * for function types, it constructs @Fun _ x@
+    -- * if the type is not Show-able, wraps the pattern in 'Blind'
+    -- * otherwise, it constructs @x@
+    mkpat :: Type -> Name -> Q Pat
+    mkpat t x = do
+        arb <- hasArbitrary t
+        sh <- hasShow t
+        when (not arb) . fail $ "testFun': no instance of arbitrary for " ++ show (ppr t)
+        if sh
+        then pure base
+        else do
+            reportWarning $ "testFun': no instance of show for " ++ show (ppr t) ++ ", using Blind"
+            pure $ ConP 'Blind [base]
       where
-        (ta, _) = uncurryType ft
+        base | isFunctionType t = ConP 'Fun [WildP, VarP x]
+             | otherwise        = VarP x
+
+    mkvar :: Type -> Name -> Q Exp
+    mkvar t x = pure base
+      where
+        base | isFunctionType t = VarE uc `AppE` VarE x
+             | otherwise = VarE x
+
+        (ta, _) = uncurryType t
         uc = mkName ("curry" ++ show (length ta))
-    mkvar _ x = VarE x
+
+-- | Is the top-level type constructor a fully applied (->)?
+isFunctionType :: Type -> Bool
+isFunctionType (AppT (AppT ArrowT _) _) = True
+isFunctionType _                        = False
+
+hasShow :: Type -> Q Bool
+hasShow t = t `hasInstance` ''Show
+
+hasArbitrary :: Type -> Q Bool
+hasArbitrary t = t `hasInstance` ''Arbitrary
 
 apply :: Name -> [Exp] -> Exp
 apply name exs = foldl AppE (VarE name) exs
+
+hasInstance :: Type -> Name -> Q Bool
+hasInstance t cls = (== 1) . length <$> reifyInstances cls [t]
 
 -- | @$('showQ' $ arity <$> [t| forall a . a -> (a -> a) -> (Int -> Int) |])@
 arity :: Type -> Int
