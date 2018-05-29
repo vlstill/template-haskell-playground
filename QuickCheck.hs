@@ -44,17 +44,19 @@ prop teacher student = (,) <$> info teacher <*> info student >>= \case
     ex i                    = Left i
 
 testFun :: Name -> Type -> Name -> Type -> Q Exp
-testFun tname ttype sname stype
-    | arity ttype /= arity stype = fail "testFun: types not equal"
-    | otherwise = testFun' tname ttype sname stype
-
-testFun' :: Name -> Type -> Name -> Type -> Q Exp
-testFun' tname ttype sname stype = do
+testFun tname ttype sname stype = do
     dtty <- degeneralize ttype
     dsty <- degeneralize stype
 
-    let (targs, _) = uncurryType dtty
+    when (dtty /= dsty) . fail $ "testFun: incompatible degeneralized types derived:\n        " ++
+                                  "teacher: " ++ pprint dtty ++ "\n        " ++
+                                  "student: " ++ pprint dsty
+
+    let (targs, rty) = uncurryType dtty
     let ar = length targs
+    retEq <- rty `hasInstance` ''Eq
+    when (not retEq) . fail $ "testFun: return type not comparable: " ++ pprint rty
+
     xs <- replicateM ar (newName "x")
 
     pats <- zipWithM mkpat targs xs
