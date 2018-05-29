@@ -40,6 +40,7 @@ prop teacher student = (,) <$> info teacher <*> info student >>= \case
     ex :: Info -> Either Info (Name, Type)
     ex (VarI     nam typ _) = Right (nam, typ)
     ex (ClassOpI nam typ _) = Right (nam, typ)
+    ex (DataConI nam typ _) = Right (nam, typ)
     ex i                    = Left i
 
 testFun :: Name -> Type -> Name -> Type -> Q Exp
