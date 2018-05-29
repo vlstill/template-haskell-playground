@@ -30,10 +30,17 @@ sprop teacher student = (,) <$> lookupValueName teacher <*> lookupValueName stud
 -- [()]
 -- [()] /= []
 prop :: Name -> Name -> Q Exp
-prop teacher student = (,) <$> reify teacher <*> reify student >>= \case
-    (VarI tnam ttype _, VarI snam stype _) -> testFun tnam ttype snam stype
-    (ClassOpI tnam ttype _, ClassOpI snam stype _) -> testFun tnam ttype snam stype
-    (t, s) -> fail $ "prop: Invarid arguments for prop:\n        " ++ pprint t ++ "\n        " ++ pprint s
+prop teacher student = (,) <$> info teacher <*> info student >>= \case
+    (Right (tnam, ttype), Right (snam, stype)) -> testFun tnam ttype snam stype
+    (Left t, Left s) -> fail $ "prop: Invarid arguments for prop:\n        " ++ pprint t ++ "\n        " ++ pprint s
+
+  where
+    info x = ex <$> reify x
+
+    ex :: Info -> Either Info (Name, Type)
+    ex (VarI     nam typ _) = Right (nam, typ)
+    ex (ClassOpI nam typ _) = Right (nam, typ)
+    ex i                    = Left i
 
 testFun :: Name -> Type -> Name -> Type -> Q Exp
 testFun tname ttype sname stype
