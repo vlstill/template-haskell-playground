@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, LambdaCase #-}
+{-# LANGUAGE TemplateHaskell, LambdaCase, TupleSections #-}
 
 module QuickCheck where
 
@@ -9,6 +9,9 @@ import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Language.Haskell.TH.ExpandSyns
 import Curry
+
+dbg :: Ppr a => Q a -> Q a
+dbg qx = qx >>= \x -> reportWarning (pprint x) >> pure x
 
 sprop :: String -> String -> Q Exp
 sprop teacher student = (,) <$> lookupValueName teacher <*> lookupValueName student >>= \case
@@ -30,7 +33,7 @@ prop :: Name -> Name -> Q Exp
 prop teacher student = (,) <$> reify teacher <*> reify student >>= \case
     (VarI tnam ttype _, VarI snam stype _) -> testFun tnam ttype snam stype
     (ClassOpI tnam ttype _, ClassOpI snam stype _) -> testFun tnam ttype snam stype
-    (t, s) -> fail $ "prop: Invarid arguments for prop:\n        " ++ show (ppr t) ++ "\n        " ++ show (ppr s)
+    (t, s) -> fail $ "prop: Invarid arguments for prop:\n        " ++ pprint t ++ "\n        " ++ pprint s
 
 testFun :: Name -> Type -> Name -> Type -> Q Exp
 testFun tname ttype sname stype
@@ -39,7 +42,10 @@ testFun tname ttype sname stype
 
 testFun' :: Name -> Type -> Name -> Type -> Q Exp
 testFun' tname ttype sname stype = do
-    let (targs, _) = uncurryType ttype
+    dtty <- degeneralize ttype
+    dsty <- degeneralize stype
+
+    let (targs, _) = uncurryType dtty
     let ar = length targs
     xs <- replicateM ar (newName "x")
 
@@ -54,17 +60,24 @@ testFun' tname ttype sname stype = do
     -- * otherwise, it constructs @x@
     mkpat :: Type -> Name -> Q Pat
     mkpat t x = do
-        arb <- hasArbitrary t
-        sh <- hasShow t
-        when (not arb) . fail $ "testFun': no instance of arbitrary for " ++ show (ppr t)
+        arb <- hasArbitrary baseT
+        sh <- hasShow baseT
+        when (not arb) . fail $ "testFun: no instance of arbitrary for " ++ pprint t
+        let typed = SigP base baseT
         if sh
-        then pure base
+        then pure typed
         else do
-            reportWarning $ "testFun': no instance of show for " ++ show (ppr t) ++ ", using Blind"
-            pure $ ConP 'Blind [base]
+            reportWarning $ "testFun: no instance of Show for " ++ pprint t ++ ", using Blind"
+            pure $ ConP 'Blind [typed]
       where
         base | isFunctionType t = ConP 'Fun [WildP, VarP x]
              | otherwise        = VarP x
+
+        baseT | isFunctionType t = ConT ''Fun `AppT` (foldl AppT (TupleT arrt) ct) `AppT` rt
+              | otherwise        = t
+
+        (ct, rt) = uncurryType t
+        arrt = length ct
 
     mkvar :: Type -> Name -> Q Exp
     mkvar t x = pure base
@@ -74,6 +87,44 @@ testFun' tname ttype sname stype = do
 
         (ta, _) = uncurryType t
         uc = mkName ("curry" ++ show (length ta))
+
+type ClassName = Name
+type TyVarName = Name
+
+degeneralize :: Type -> Q Type
+degeneralize t = degen [] [] t
+  where
+    degen :: [TyVarBndr] -> Cxt -> Type -> Q Type
+    degen bndr cxt (ForallT b c t) = degen (bndr ++ b) (cxt ++ c) t
+    degen bndr0 cxt0 t = do
+        substc <- extractCandidates bndr0
+        cxt <- extractCxt cxt0
+        subst <- filterSubstitutions substc cxt
+
+        pure $ foldr substInType t subst
+
+    -- | extract simple contexts to
+    extractCxt :: Cxt -> Q [(TyVarName, ClassName)]
+    extractCxt = mapM ex
+      where
+        ex (AppT (ConT c) (VarT v)) = pure (v, c)
+        ex x = fail $ "degeneralize: Complex context " ++ pprint x ++ " not supported"
+
+    extractCandidates :: [TyVarBndr] -> Q [(TyVarName, [Type])]
+    extractCandidates = mapM ex
+      where
+        ex (PlainTV x) = (x, ) . (:[]) <$> [t| Integer |]
+        ex (KindedTV x StarT) = (x, ) . (:[]) <$> [t| Integer |]
+        ex (KindedTV x (AppT (AppT ArrowT StarT) StarT)) = (x, ) . (:[]) <$> [t| [] |]
+        ex ktv = fail $ "degeneralize: Complex type variable " ++ pprint ktv ++ " not supported"
+
+    filterSubstitutions :: [(TyVarName, [Type])] -> [(TyVarName, ClassName)] -> Q [(TyVarName, Type)]
+    filterSubstitutions vs cxt = mapM (\(v, cs) -> subst v cs (map snd $ filter (\x -> fst x == v) $ cxt)) vs
+
+    subst :: TyVarName -> [Type] -> [ClassName] -> Q (TyVarName, Type)
+    subst v cands clss = filterM (\t -> and <$> mapM (\c -> t `hasInstance` c) clss) cands >>= \case
+        []  -> fail $ "degeneralize: Could not degeneralize " ++ pprint v ++ " with constraints " ++ show cands
+        t:_ -> pure (v, t)
 
 -- | Is the top-level type constructor a fully applied (->)?
 isFunctionType :: Type -> Bool
